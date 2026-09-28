@@ -1,0 +1,250 @@
+--[[
+  AutoHop.lua
+  - Hops to a busy (max players, but not full) public server every hour
+  - Saves a position per game (per PlaceId) into the executor workspace
+  - Walks there normally (pathfinding) after every join
+  - Works in any game
+
+  SETUP:
+  1. Save this file as:  workspace/AutoHop/main.lua
+  2. Run it with:  loadstring(readfile("AutoHop/main.lua"))()
+  (It re-queues itself automatically after each teleport.)
+]]
+
+-- ================= CONFIG =================
+local CONFIG = {
+    HopInterval   = 99999999,   -- seconds between hops (3600 = 1 hour)
+    ServerMode    = "max",  -- "max" = fullest server with a free slot, "low" = emptiest
+    MaxPages      = 5,      -- how many server list pages to scan (100 servers/page)
+    WalkTimeout   = 120,    -- give up walking after this many seconds
+    AutoWalk      = true,   -- walk to saved position after joining
+    Folder        = "AutoHop",
+}
+-- ==========================================
+
+if getgenv then
+    if getgenv().AutoHopLoaded then return end
+    getgenv().AutoHopLoaded = true
+end
+
+local Players          = game:GetService("Players")
+local TeleportService  = game:GetService("TeleportService")
+local HttpService      = game:GetService("HttpService")
+local PathfindingService = game:GetService("PathfindingService")
+local CoreGui          = game:GetService("CoreGui")
+
+local player  = Players.LocalPlayer
+local placeId = game.PlaceId
+local jobId   = game.JobId
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+-- ---------- Workspace (file saving) ----------
+local canFile = writefile and readfile and isfile and makefolder
+if canFile and isfolder and not isfolder(CONFIG.Folder) then
+    pcall(makefolder, CONFIG.Folder)
+end
+
+local posFile = CONFIG.Folder .. "/pos_" .. tostring(placeId) .. ".json"
+local mainFile = CONFIG.Folder .. "/main.lua"
+
+local function savePosition(vec)
+    if not canFile then return false end
+    local data = HttpService:JSONEncode({x = vec.X, y = vec.Y, z = vec.Z})
+    return pcall(writefile, posFile, data)
+end
+
+local function loadPosition()
+    if not canFile or not isfile(posFile) then return nil end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(posFile))
+    end)
+    if ok and data then return Vector3.new(data.x, data.y, data.z) end
+end
+
+-- ---------- Re-run after teleport ----------
+local function queueSelf()
+    if queue_on_teleport and canFile and isfile(mainFile) then
+        queue_on_teleport('loadstring(readfile("' .. mainFile .. '"))()')
+    end
+end
+queueSelf()
+
+-- ---------- Walking ----------
+local function getChar()
+    local char = player.Character or player.CharacterAdded:Wait()
+    local hum = char:WaitForChild("Humanoid")
+    local root = char:WaitForChild("HumanoidRootPart")
+    return char, hum, root
+end
+
+local function walkTo(target)
+    local _, hum, root = getChar()
+    local start = os.clock()
+
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2, AgentHeight = 5, AgentCanJump = true,
+    })
+
+    local ok = pcall(function() path:ComputeAsync(root.Position, target) end)
+    if not ok or path.Status ~= Enum.PathStatus.Success then
+        -- fallback: straight walk
+        hum:MoveTo(target)
+        hum.MoveToFinished:Wait()
+        return
+    end
+
+    for _, wp in ipairs(path:GetWaypoints()) do
+        if os.clock() - start > CONFIG.WalkTimeout then return end
+        if wp.Action == Enum.PathWaypointAction.Jump then
+            hum.Jump = true
+        end
+        hum:MoveTo(wp.Position)
+        local reached = false
+        local conn = hum.MoveToFinished:Connect(function() reached = true end)
+        local t = os.clock()
+        while not reached and os.clock() - t < 4 do task.wait(0.1) end
+        conn:Disconnect()
+        if not reached then break end
+    end
+end
+
+-- ---------- Server hop ----------
+local function fetchServers(cursor)
+    local order = CONFIG.ServerMode == "low" and "Asc" or "Desc"
+    local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&limit=100")
+        :format(placeId, order)
+    if cursor then url = url .. "&cursor=" .. cursor end
+
+    local body
+    if request then
+        local r = request({Url = url, Method = "GET"})
+        body = r and r.Body
+    else
+        body = game:HttpGet(url)
+    end
+    return body and HttpService:JSONDecode(body)
+end
+
+local hopping = false
+local function serverHop()
+    if hopping then return end
+    hopping = true
+    queueSelf()
+
+    local cursor
+    for _ = 1, CONFIG.MaxPages do
+        local ok, res = pcall(fetchServers, cursor)
+        if ok and res and res.data then
+            for _, s in ipairs(res.data) do
+                if s.id ~= jobId and s.playing and s.maxPlayers
+                    and s.playing < s.maxPlayers - 1 then -- keep 1 slot free
+                    pcall(TeleportService.TeleportToPlaceInstance,
+                        TeleportService, placeId, s.id, player)
+                    task.wait(8)
+                end
+            end
+            cursor = res.nextPageCursor
+            if not cursor then break end
+        else
+            task.wait(3)
+        end
+    end
+    hopping = false
+end
+
+TeleportService.TeleportInitFailed:Connect(function()
+    hopping = false
+    task.wait(2)
+    serverHop()
+end)
+
+-- ---------- Small GUI ----------
+local function makeGui()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "AutoHopGui"
+    gui.ResetOnSpawn = false
+    pcall(function() gui.Parent = (gethui and gethui()) or CoreGui end)
+    if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
+
+    local frame = Instance.new("Frame", gui)
+    frame.Size = UDim2.new(0, 170, 0, 150)
+    frame.Position = UDim2.new(0, 10, 0.4, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    frame.Active, frame.Draggable = true, true
+    Instance.new("UICorner", frame)
+
+    local timerLabel = Instance.new("TextLabel", frame)
+    timerLabel.Size = UDim2.new(1, 0, 0, 28)
+    timerLabel.BackgroundTransparency = 1
+    timerLabel.TextColor3 = Color3.new(1, 1, 1)
+    timerLabel.Font = Enum.Font.GothamBold
+    timerLabel.TextSize = 14
+    timerLabel.Text = "Next hop: --:--"
+
+    local function btn(text, y, cb)
+        local b = Instance.new("TextButton", frame)
+        b.Size = UDim2.new(1, -16, 0, 30)
+        b.Position = UDim2.new(0, 8, 0, y)
+        b.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        b.TextColor3 = Color3.new(1, 1, 1)
+        b.Font = Enum.Font.Gotham
+        b.TextSize = 13
+        b.Text = text
+        Instance.new("UICorner", b)
+        b.MouseButton1Click:Connect(function() cb(b) end)
+        return b
+    end
+
+    btn("Save Position", 32, function(b)
+        local _, _, root = getChar()
+        local ok = savePosition(root.Position)
+        b.Text = ok and "Saved!" or "Save failed"
+        task.delay(1.5, function() b.Text = "Save Position" end)
+    end)
+
+    btn("Walk To Saved", 68, function()
+        local p = loadPosition()
+        if p then task.spawn(walkTo, p) end
+    end)
+
+    btn("Hop Now", 104, function() task.spawn(serverHop) end)
+
+    return timerLabel
+end
+
+local timerLabel = makeGui()
+
+-- ---------- Main ----------
+task.spawn(function()
+    if CONFIG.AutoWalk then
+        getChar()
+        task.wait(3)
+        local p = loadPosition()
+        if p then walkTo(p) end
+    end
+end)
+
+local startTime = os.clock()
+task.spawn(function()
+    while true do
+        local left = math.max(0, CONFIG.HopInterval - (os.clock() - startTime))
+        timerLabel.Text = ("Next hop: %02d:%02d"):format(left // 60, left % 60)
+        if left <= 0 then
+            serverHop()
+            startTime = os.clock() + 30 -- retry delay if hop fails
+        end
+        task.wait(1)
+    end
+end)
+
+-- Anti-AFK (prevents the 20 min idle kick)
+player.Idled:Connect(function()
+    local vu = game:GetService("VirtualUser")
+    vu:CaptureController()
+    vu:ClickButton2(Vector2.new())
+end)
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Umniv/NEW-UMNIVERSAL-SCRIPT-/refs/heads/main/serverlist"))()
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/hassanxzayn-lua/Anti-afk/main/antiafkbyhassanxzyn"))()
