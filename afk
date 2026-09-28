@@ -1,0 +1,4 @@
+loadstring(game:HttpGet("https://pastebin.com/raw/EbWYzsks"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Umniv/NEW-UMNIVERSAL-SCRIPT-/refs/heads/main/autoafk"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Umniv/NEW-UMNIVERSAL-SCRIPT-/refs/heads/main/serverlist"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/hassanxzayn-lua/Anti-afk/main/antiafkbyhassanxzyn"))()
